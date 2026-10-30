@@ -45,14 +45,25 @@ class EntailmentModel(object):
         # Note that the labels are ["entailment", "neutral", "contradiction"]. There are a number of ways to map
         # these logits or probabilities to classification decisions; you'll have to decide how you want to do this.
 
-        raise Exception("Not implemented")
+        # STEP 01: logits -> probabilities over the 3 classes
+        probs = torch.softmax(logits, dim=-1)
 
-        # To prevent out-of-memory (OOM) issues during autograding, we explicitly delete
-        # objects inputs, outputs, logits, and any results that are no longer needed after the computation.
-        del inputs, outputs, logits
+        # STEP 02: index of the highest probability
+        pred_idx = torch.argmax(probs, dim=-1).item()
+        labels = ["entailment", "neutral", "contradiction"]
+        predicted_label = labels[pred_idx]
+
+        # STEP 03: convert tensors to plain Python values
+        probs_list = probs[0].tolist()
+        entailment_prob = probs_list[0]
+        neutral_prob = probs_list[1]
+        contradiction_prob = probs_list[2]
+
+        del inputs, outputs, logits, probs
         gc.collect()
 
-        # return something
+        # STEP 04: return label + all three probabilities (no threshold applied here)
+        return predicted_label, entailment_prob, neutral_prob, contradiction_prob
 
 
 class FactChecker(object):
