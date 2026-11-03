@@ -165,7 +165,10 @@ class EntailmentFactChecker(FactChecker):
         self.ent_model = ent_model
 
     def predict(self, fact: str, passages: List[dict]) -> str:
-        raise Exception("Implement me")
+        for passage in passages:
+            if self.ent_model.check_entailment(passage["text"], fact) == "entailment":
+                return "S"
+        return "NS"
 
 
 # OPTIONAL
