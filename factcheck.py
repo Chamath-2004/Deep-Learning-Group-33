@@ -1,10 +1,35 @@
 # factcheck.py
 
+from sympy import re
 import torch
 from typing import List
 import numpy as np
 import spacy
 import gc
+import re
+
+STOP_WORDS = frozenset(
+    "a an the and or of in on at to for with by from as is are was were be been being has have had do does did "
+    "it its this that these those he she they his her their him them who which what when where i you we not no "
+    "s also".split()
+)  
+
+
+
+def simple_stem(word: str) -> str:
+    """Very light suffix stripping (no external dependency); only strips if >= 3 chars remain."""
+    for suffix in ("ing", "edly", "ed", "es", "ly", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            return word[:-len(suffix)]
+    return word
+ 
+ 
+def tokenize(text: str) -> List[str]:
+    """Lowercase, split into alphanumeric tokens, drop stop words, then stem."""
+    words = re.findall(r"[a-z0-9]+", text.lower())
+    return [simple_stem(w) for w in words if w not in STOP_WORDS]
+
+
 
 
 class FactExample(object):
@@ -93,8 +118,46 @@ class AlwaysEntailedFactChecker(FactChecker):
 
 
 class WordRecallThresholdFactChecker(FactChecker):
+    """
+    Bag-of-words recall: the weighted fraction of the fact's (stop-word-filtered, stemmed) unique tokens that
+    appear anywhere in the retrieved passages. Predicts "S" if the recall is >= threshold.
+ 
+    Design choices (selected by grid search on the dev set, see report):
+      * stop words removed + light stemming  -> removes function-word noise, matches inflections
+      * recall over the UNION of all passages (a fact may be supported by information spread over passages)
+      * tokens that are capitalised (not sentence-initial) or numeric in the fact -- names, places, dates --
+        get weight 2, since they carry the facts' content; other tokens get weight 1
+      * threshold 0.775: centre of the plateau (0.75-0.80) where dev accuracy is within 1% of the best
+    """
+    CONTENT_WEIGHT = 2.0
+    THRESHOLD = 0.775
+ 
+    def __init__(self, threshold: float = THRESHOLD, content_weight: float = CONTENT_WEIGHT):
+        self.threshold = threshold
+        self.content_weight = content_weight
+ 
+    def score(self, fact: str, passages: List[dict]) -> float:
+        fact_tokens = set(tokenize(fact))
+        if not fact_tokens:
+            return 0.0
+        # Content tokens: capitalised or numeric words, ignoring the first word of the sentence
+        raw_words = re.findall(r"[A-Za-z0-9]+", fact)[1:]
+        content_tokens = set(tokenize(" ".join(w for w in raw_words if w[0].isupper() or w[0].isdigit())))
+ 
+        passage_tokens = set()
+        for p in passages:
+            passage_tokens.update(tokenize(p["text"]))
+ 
+        total = matched = 0.0
+        for tok in fact_tokens:
+            w = self.content_weight if tok in content_tokens else 1.0
+            total += w
+            if tok in passage_tokens:
+                matched += w
+        return matched / total
+ 
     def predict(self, fact: str, passages: List[dict]) -> str:
-        raise Exception("Implement me")
+        return "S" if self.score(fact, passages) >= self.threshold else "NS"
 
 
 class EntailmentFactChecker(FactChecker):
