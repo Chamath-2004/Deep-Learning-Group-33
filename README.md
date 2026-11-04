@@ -20,11 +20,10 @@ The program returns:
 
 The coursework requires Python 3.10. A local virtual environment is already configured in `.venv`.
 
-### Windows PowerShell
+### Windows
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 ### Linux or macOS
@@ -41,7 +40,7 @@ python factchecking_main.py --mode word_overlap
 python factchecking_main.py --mode entailment
 ```
 
-The entailment mode downloads the DeBERTa-v3 model from Hugging Face the first time it runs. It may take time and requires network access. Use `--cuda` only when PyTorch and a supported GPU are available:
+The entailment mode downloads the DeBERTa-v3 model from Hugging Face the first time it runs. It may take time and requires network access. Use `--cuda` when a CUDA-enabled PyTorch build and supported GPU are available. If CUDA is unavailable, the program safely falls back to CPU:
 
 ```bash
 python factchecking_main.py --mode entailment --cuda

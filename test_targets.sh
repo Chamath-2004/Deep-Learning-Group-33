@@ -15,11 +15,15 @@ echo "Testing word-overlap coursework target..."
 "$PYTHON" "$ROOT_DIR/factchecking_main.py" --mode word_overlap
 word_overlap_status=$?
 
+echo "Testing EntailmentFactChecker.predict..."
+"$PYTHON" "$ROOT_DIR/test_entailment_predict.py"
+predict_status=$?
+
 echo "Testing entailment coursework target..."
 "$PYTHON" "$ROOT_DIR/factchecking_main.py" --mode entailment
 entailment_status=$?
 
-if [ "$word_overlap_status" -ne 0 ] || [ "$entailment_status" -ne 0 ]; then
+if [ "$word_overlap_status" -ne 0 ] || [ "$predict_status" -ne 0 ] || [ "$entailment_status" -ne 0 ]; then
     exit 1
 fi
 

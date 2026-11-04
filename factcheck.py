@@ -161,16 +161,65 @@ class WordRecallThresholdFactChecker(FactChecker):
 
 
 class EntailmentFactChecker(FactChecker):
+    MAX_SENTENCES_PER_PASSAGE = 3
+    ENTAILMENT_THRESHOLD = 0.35
+
     def __init__(self, ent_model):
         self.ent_model = ent_model
 
+    def sentence_splitting(self, passage_text: str) -> List[str]:
+        """Split retrieved evidence into sentence-sized premises."""
+        return [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+", passage_text)
+            if sentence.strip()
+        ]
+
+    def noise_removal(self, sentences: List[str]) -> List[str]:
+        """Remove empty fragments and duplicated evidence sentences."""
+        seen = set()
+        cleaned = []
+        for sentence in sentences:
+            normalized = " ".join(sentence.split())
+            key = normalized.casefold()
+            if normalized and key not in seen:
+                seen.add(key)
+                cleaned.append(normalized)
+        return cleaned
+
+    def word_overlap_pruning(self, fact: str, sentences: List[str]) -> List[str]:
+        """Keep the most fact-relevant sentences before expensive model inference."""
+        fact_tokens = set(tokenize(fact))
+        if not fact_tokens:
+            return sentences[:self.MAX_SENTENCES_PER_PASSAGE]
+
+        ranked = []
+        for index, sentence in enumerate(sentences):
+            sentence_tokens = set(tokenize(sentence))
+            overlap = len(fact_tokens & sentence_tokens)
+            ranked.append((overlap, len(sentence_tokens), -index, sentence))
+
+        ranked.sort(reverse=True)
+        selected = [
+            sentence
+            for overlap, _, _, sentence in ranked[:self.MAX_SENTENCES_PER_PASSAGE]
+            if overlap > 0
+        ]
+        return selected or sentences[:self.MAX_SENTENCES_PER_PASSAGE]
+
     def predict(self, fact: str, passages: List[dict]) -> str:
+        best_entailment_probability = 0.0
         for passage in passages:
-            result = self.ent_model.check_entailment(passage["text"], fact)
-            label = result[0] if isinstance(result, tuple) else result
-            if label == "entailment":
-                return "S"
-        return "NS"
+            sentences = self.sentence_splitting(passage["text"])
+            sentences = self.noise_removal(sentences)
+            sentences = self.word_overlap_pruning(fact, sentences)
+            for sentence in sentences:
+                result = self.ent_model.check_entailment(sentence, fact)
+                if isinstance(result, tuple):
+                    best_entailment_probability = max(best_entailment_probability, result[1])
+                elif result == "entailment":
+                    best_entailment_probability = 1.0
+        return "S" if best_entailment_probability >= self.ENTAILMENT_THRESHOLD else "NS"
 
 
 # OPTIONAL
