@@ -166,18 +166,32 @@ class EntailmentFactChecker(FactChecker):
 
     def predict(self, fact: str, passages: List[dict]) -> str:
         for passage in passages:
-            if self.ent_model.check_entailment(passage["text"], fact) == "entailment":
+            result = self.ent_model.check_entailment(passage["text"], fact)
+            label = result[0] if isinstance(result, tuple) else result
+            if label == "entailment":
                 return "S"
         return "NS"
 
 
 # OPTIONAL
 class DependencyRecallThresholdFactChecker(FactChecker):
+    THRESHOLD = 0.5
+
     def __init__(self):
         self.nlp = spacy.load('en_core_web_sm')
 
     def predict(self, fact: str, passages: List[dict]) -> str:
-        raise Exception("Implement me")
+        fact_dependencies = self.get_dependencies(fact)
+        if not fact_dependencies:
+            return "NS"
+
+        best_recall = 0.0
+        for passage in passages:
+            passage_dependencies = self.get_dependencies(passage["text"])
+            recall = len(fact_dependencies & passage_dependencies) / len(fact_dependencies)
+            best_recall = max(best_recall, recall)
+
+        return "S" if best_recall >= self.THRESHOLD else "NS"
 
     def get_dependencies(self, sent: str):
         """
