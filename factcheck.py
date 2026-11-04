@@ -1,12 +1,15 @@
 # factcheck.py
 
-from sympy import re
 import torch
 from typing import List
 import numpy as np
 import spacy
 import gc
 import re
+import os
+import json
+import math
+from collections import Counter
 
 STOP_WORDS = frozenset(
     "a an the and or of in on at to for with by from as is are was were be been being has have had do does did "
@@ -117,47 +120,200 @@ class AlwaysEntailedFactChecker(FactChecker):
         return "S"
 
 
+DEFAULT_PASSAGES_PATH = "data/passages_bm25_ChatGPT_humfacts.jsonl" 
+
+def _bleu(cand: List[str], ref: List[str], max_n: int = 4) -> float:
+    """Sentence BLEU: add-one smoothed n-gram precisions (n > 1) and a brevity penalty."""
+    if not cand:
+        return 0.0
+    log_p, used = 0.0, 0
+    for n in range(1, max_n + 1):
+        cand_ng = Counter(tuple(cand[i:i + n]) for i in range(len(cand) - n + 1))
+        if not cand_ng:
+            break
+        ref_ng = Counter(tuple(ref[i:i + n]) for i in range(len(ref) - n + 1))
+        match = sum(min(c, ref_ng[g]) for g, c in cand_ng.items())
+        total = sum(cand_ng.values())
+        log_p += math.log((match + 1) / (total + 1)) if n > 1 else math.log(max(match, 1e-9) / total)
+        used += 1
+    bp = 1.0 if len(cand) >= len(ref) else math.exp(1 - len(ref) / len(cand))
+    return bp * math.exp(log_p / used)
+ 
+ 
 class WordRecallThresholdFactChecker(FactChecker):
     """
-    Bag-of-words recall: the weighted fraction of the fact's (stop-word-filtered, stemmed) unique tokens that
-    appear anywhere in the retrieved passages. Predicts "S" if the recall is >= threshold.
+    Bag-of-words overlap fact checker. score(fact, passages) is a real number in [0, 1] computed by one of several
+    lexical metrics (see METRICS); predict() says "S" when score >= threshold, else "NS".
  
-    Design choices (selected by grid search on the dev set, see report):
-      * stop words removed + light stemming  -> removes function-word noise, matches inflections
-      * recall over the UNION of all passages (a fact may be supported by information spread over passages)
-      * tokens that are capitalised (not sentence-initial) or numeric in the fact -- names, places, dates --
-        get weight 2, since they carry the facts' content; other tokens get weight 1
-      * threshold 0.775: centre of the plateau (0.75-0.80) where dev accuracy is within 1% of the best
+    All metrics use the same preprocessing (tokenize(): lowercase, alphanumeric tokens, stop-word removal, light
+    stemming) and compare the fact against ALL retrieved passages merged into one bag of words.
+ 
+    FINAL METRIC (highest dev accuracy, see report): "idf_recall"
+        = IDF-weighted recall: the share of the fact's unique tokens, each weighted by its inverse document
+        frequency, that also occur in the passages. Matching a rare word (a surname, a place) counts for more than
+        matching a common one ("born", "known"). Dev accuracy is 181/221 = 81.9% at the default threshold 0.725
+        (peak 182/221 = 82.4% at 0.7249). It ties for the top with "idf_content_recall" (the same score with an
+        extra boost for capitalised/numeric words) and is simpler, so it is the default. Its accuracy stays
+        >= 80% for thresholds 0.68 - 0.80, so the threshold is not a knife-edge.
+ 
+    The IDF table is built once from the retrieved passages file (DEFAULT_PASSAGES_PATH, the same file
+    factchecking_main.py loads). If that file can't be found the checker falls back to "content_recall", which
+    needs no external statistics.
     """
-    CONTENT_WEIGHT = 2.0
-    THRESHOLD = 0.775
+    METRICS = ["recall", "content_recall", "idf_recall", "idf_content_recall", "jaccard", "precision", "f1",
+               "cosine_binary", "cosine_tfidf", "rouge1_f1", "bleu"]
  
-    def __init__(self, threshold: float = THRESHOLD, content_weight: float = CONTENT_WEIGHT):
-        self.threshold = threshold
+    CONTENT_WEIGHT = 2.0
+    FINAL_METRIC = "idf_recall"  #change this to "idf_content_recall" if you want the other top metric instead
+   
+    THRESHOLDS = {
+        "recall": 0.714, "content_recall": 0.775, "idf_recall": 0.725, "idf_content_recall": 0.800,
+        "jaccard": 0.005, "precision": 0.005, "f1": 0.010, "cosine_binary": 0.087, "cosine_tfidf": 0.040,
+        "rouge1_f1": 0.018, "bleu": 0.0, 
+    }
+ 
+    def __init__(self, metric: str = None, threshold: float = None, content_weight: float = CONTENT_WEIGHT,
+                 passages_path: str = DEFAULT_PASSAGES_PATH):
+        self.metric = metric or self.FINAL_METRIC
+        assert self.metric in self.METRICS, "unknown metric: " + repr(self.metric)
         self.content_weight = content_weight
+        self.passages_path = passages_path
+        self.idf_table = None
+        self.idf_default = 1.0
+        self._idf_loaded = False
+        self._threshold_override = threshold
+        self.fallback = False
+ 
+    # ---------------------------------------------------------------- IDF
+    def _load_idf(self):
+        """Build document frequencies over every retrieved passage in the passages file (once)."""
+        if self._idf_loaded:
+            return
+        self._idf_loaded = True
+        needs_idf = self.metric in ("idf_recall", "idf_content_recall", "cosine_tfidf")
+        if not needs_idf:
+            return
+        here = os.path.dirname(os.path.abspath(__file__))
+        for path in (self.passages_path, os.path.join(here, self.passages_path)):
+            if os.path.exists(path):
+                df, n = Counter(), 0
+                with open(path, "r") as f:
+                    for line in f:
+                        for p in json.loads(line)["passages"]:
+                            n += 1
+                            df.update(set(tokenize(p["text"])))
+                self.idf_table = (df, n)
+                return
+        # passages file not found -> fall back to a metric that needs no corpus statistics
+        if self.metric != "cosine_tfidf":
+            self.metric = "content_recall"
+            self.fallback = True
+ 
+    def idf(self, token: str) -> float:
+        if self.idf_table is None:
+            return 1.0
+        df, n = self.idf_table
+        return math.log((n + 1) / (df.get(token, 0) + 1)) + 1
+ 
+    @property
+    def threshold(self) -> float:
+        if self._threshold_override is not None:
+            return self._threshold_override
+        return self.THRESHOLDS[self.metric]
+ 
+    # ---------------------------------------------------------------- scoring
+    def _content_tokens(self, fact: str) -> set:
+        """Capitalised (not sentence-initial) or numeric words of the fact, tokenized like everything else."""
+        raw = re.findall(r"[A-Za-z0-9]+", fact)[1:]
+        return set(tokenize(" ".join(w for w in raw if w[0].isupper() or w[0].isdigit())))
+ 
+    def _weighted_recall(self, fact: str, fact_set: set, pass_set: set, use_idf: bool, use_content: bool) -> float:
+        content = self._content_tokens(fact) if use_content else set()
+        total = matched = 0.0
+        for tok in fact_set:
+            w = self.idf(tok) if use_idf else 1.0
+            if tok in content:
+                w *= self.content_weight
+            total += w
+            if tok in pass_set:
+                matched += w
+        return matched / total if total else 0.0
  
     def score(self, fact: str, passages: List[dict]) -> float:
-        fact_tokens = set(tokenize(fact))
-        if not fact_tokens:
+        self._load_idf()
+        fact_toks = tokenize(fact)
+        fact_set = set(fact_toks)
+        if not fact_set:
             return 0.0
-        # Content tokens: capitalised or numeric words, ignoring the first word of the sentence
-        raw_words = re.findall(r"[A-Za-z0-9]+", fact)[1:]
-        content_tokens = set(tokenize(" ".join(w for w in raw_words if w[0].isupper() or w[0].isdigit())))
+        pass_toks = [t for p in passages for t in tokenize(p["text"])]
+        pass_set = set(pass_toks)
+        inter = fact_set & pass_set
+        m = self.metric
  
-        passage_tokens = set()
-        for p in passages:
-            passage_tokens.update(tokenize(p["text"]))
- 
-        total = matched = 0.0
-        for tok in fact_tokens:
-            w = self.content_weight if tok in content_tokens else 1.0
-            total += w
-            if tok in passage_tokens:
-                matched += w
-        return matched / total
+        if m == "recall":
+            return len(inter) / len(fact_set)
+        if m == "content_recall":
+            return self._weighted_recall(fact, fact_set, pass_set, use_idf=False, use_content=True)
+        if m == "idf_recall":
+            return self._weighted_recall(fact, fact_set, pass_set, use_idf=True, use_content=False)
+        if m == "idf_content_recall":
+            return self._weighted_recall(fact, fact_set, pass_set, use_idf=True, use_content=True)
+        if not pass_set:
+            return 0.0
+        precision = len(inter) / len(pass_set)
+        recall = len(inter) / len(fact_set)
+        if m == "precision":
+            return precision
+        if m == "f1":
+            return 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+        if m == "jaccard":
+            return len(inter) / len(fact_set | pass_set)
+        if m == "cosine_binary":
+            return len(inter) / math.sqrt(len(fact_set) * len(pass_set))
+        if m == "cosine_tfidf":
+            fc, pc = Counter(fact_toks), Counter(pass_toks)
+            wf = {w: c * self.idf(w) for w, c in fc.items()}
+            wp = {w: c * self.idf(w) for w, c in pc.items()}
+            dot = sum(v * wp.get(w, 0.0) for w, v in wf.items())
+            nf = math.sqrt(sum(v * v for v in wf.values()))
+            npass = math.sqrt(sum(v * v for v in wp.values()))
+            return dot / (nf * npass) if nf and npass else 0.0
+        if m == "rouge1_f1":
+            fc, pc = Counter(fact_toks), Counter(pass_toks)
+            overlap = sum(min(c, pc[w]) for w, c in fc.items())
+            r, p = overlap / len(fact_toks), overlap / len(pass_toks)
+            return 2 * p * r / (p + r) if p + r else 0.0
+        if m == "bleu":
+            return _bleu(fact_toks, pass_toks)
+        raise NotImplementedError(m)
  
     def predict(self, fact: str, passages: List[dict]) -> str:
-        return "S" if self.score(fact, passages) >= self.threshold else "NS"
+        score = self.score(fact, passages)          # first call may switch to the fallback metric
+        return "S" if score >= self.threshold else "NS"
+ 
+ 
+def sweep_metrics(examples: List[FactExample], metrics: List[str] = None):
+    """
+    EXPERIMENT HELPER (not used by the graded commands). For each metric, tries every distinct score as the
+    threshold and prints the best dev accuracy. Use it from a scratch script:
+ 
+        from factchecking_main import *      # or copy read_passages / read_fact_examples
+        sweep_metrics(examples)
+    """
+    metrics = metrics or WordRecallThresholdFactChecker.METRICS
+    golds = [("NS" if ex.label == "IR" else ex.label) == "S" for ex in examples]
+    results = []
+    for metric in metrics:
+        checker = WordRecallThresholdFactChecker(metric=metric)
+        scores = [checker.score(ex.fact, ex.passages) for ex in examples]
+        best_acc, best_thr = 0.0, 0.0
+        for t in sorted(set(scores)):
+            acc = sum((s >= t) == g for s, g in zip(scores, golds)) / len(golds)
+            if acc > best_acc:
+                best_acc, best_thr = acc, t
+        results.append((metric, best_acc, best_thr))
+        print(f"{metric:20s} best acc = {best_acc:.3f} ({round(best_acc * len(golds))}/{len(golds)}) at threshold {best_thr:.4f}")
+    return results
 
 
 class EntailmentFactChecker(FactChecker):
