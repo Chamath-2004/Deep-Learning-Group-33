@@ -162,7 +162,7 @@ class WordRecallThresholdFactChecker(FactChecker):
 
 class EntailmentFactChecker(FactChecker):
     MAX_SENTENCES_PER_PASSAGE = 3
-    ENTAILMENT_THRESHOLD = 0.35
+    ENTAILMENT_THRESHOLD = 0.367
 
     def __init__(self, ent_model):
         self.ent_model = ent_model
