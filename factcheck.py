@@ -317,20 +317,86 @@ def sweep_metrics(examples: List[FactExample], metrics: List[str] = None):
 
 
 class EntailmentFactChecker(FactChecker):
+    MAX_SENTENCES_PER_PASSAGE = 5
+    ENTAILMENT_THRESHOLD = 0.333
+
     def __init__(self, ent_model):
         self.ent_model = ent_model
 
+    def sentence_splitting(self, passage_text: str) -> List[str]:
+        """Split retrieved evidence into sentence-sized premises."""
+        return [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+", passage_text)
+            if sentence.strip()
+        ]
+
+    def noise_removal(self, sentences: List[str]) -> List[str]:
+        """Remove empty fragments and duplicated evidence sentences."""
+        seen = set()
+        cleaned = []
+        for sentence in sentences:
+            normalized = " ".join(sentence.split())
+            key = normalized.casefold()
+            if normalized and key not in seen:
+                seen.add(key)
+                cleaned.append(normalized)
+        return cleaned
+
+    def word_overlap_pruning(self, fact: str, sentences: List[str]) -> List[str]:
+        """Keep the most fact-relevant sentences before expensive model inference."""
+        fact_tokens = set(tokenize(fact))
+        if not fact_tokens:
+            return sentences[:self.MAX_SENTENCES_PER_PASSAGE]
+
+        ranked = []
+        for index, sentence in enumerate(sentences):
+            sentence_tokens = set(tokenize(sentence))
+            overlap = len(fact_tokens & sentence_tokens)
+            ranked.append((overlap, len(sentence_tokens), -index, sentence))
+
+        ranked.sort(reverse=True)
+        selected = [
+            sentence
+            for overlap, _, _, sentence in ranked[:self.MAX_SENTENCES_PER_PASSAGE]
+            if overlap > 0
+        ]
+        return selected or sentences[:self.MAX_SENTENCES_PER_PASSAGE]
+
     def predict(self, fact: str, passages: List[dict]) -> str:
-        raise Exception("Implement me")
+        best_entailment_probability = 0.0
+        for passage in passages:
+            sentences = self.sentence_splitting(passage["text"])
+            sentences = self.noise_removal(sentences)
+            sentences = self.word_overlap_pruning(fact, sentences)
+            for sentence in sentences:
+                result = self.ent_model.check_entailment(sentence, fact)
+                if isinstance(result, tuple):
+                    best_entailment_probability = max(best_entailment_probability, result[1])
+                elif result == "entailment":
+                    best_entailment_probability = 1.0
+        return "S" if best_entailment_probability >= self.ENTAILMENT_THRESHOLD else "NS"
 
 
 # OPTIONAL
 class DependencyRecallThresholdFactChecker(FactChecker):
+    THRESHOLD = 0.5
+
     def __init__(self):
         self.nlp = spacy.load('en_core_web_sm')
 
     def predict(self, fact: str, passages: List[dict]) -> str:
-        raise Exception("Implement me")
+        fact_dependencies = self.get_dependencies(fact)
+        if not fact_dependencies:
+            return "NS"
+
+        best_recall = 0.0
+        for passage in passages:
+            passage_dependencies = self.get_dependencies(passage["text"])
+            recall = len(fact_dependencies & passage_dependencies) / len(fact_dependencies)
+            best_recall = max(best_recall, recall)
+
+        return "S" if best_recall >= self.THRESHOLD else "NS"
 
     def get_dependencies(self, sent: str):
         """

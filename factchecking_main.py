@@ -1,6 +1,7 @@
 # factscore_retrieval_interface.py
 
 import json
+import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from typing import List, Dict
 from tqdm import tqdm
@@ -145,9 +146,12 @@ if __name__=="__main__":
         # model_name = "roberta-large-mnli"   # alternative model that you can try out if you want
         ent_tokenizer = AutoTokenizer.from_pretrained(model_name)
         roberta_ent_model = AutoModelForSequenceClassification.from_pretrained(model_name)
-        if args.cuda:
+        use_cuda = args.cuda and torch.cuda.is_available()
+        if args.cuda and not use_cuda:
+            print("CUDA requested but unavailable; using CPU.")
+        if use_cuda:
             roberta_ent_model.to('cuda')
-        ent_model = EntailmentModel(roberta_ent_model, ent_tokenizer, args.cuda)
+        ent_model = EntailmentModel(roberta_ent_model, ent_tokenizer, use_cuda)
         fact_checker = EntailmentFactChecker(ent_model)
     else:
         raise NotImplementedError
