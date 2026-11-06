@@ -1,8 +1,6 @@
 
-# ============================================================
 # PART 3: ERROR ANALYSIS
 # Identify False Positives and False Negatives
-# ============================================================
 
 import json
 import torch
@@ -13,10 +11,7 @@ from factchecking_main import read_passages, read_fact_examples
 from factcheck import EntailmentModel, EntailmentFactChecker
 
 
-# ============================================================
 # STEP 01: LOAD DATASET
-# ============================================================
-
 LABELS_PATH = "data/dev_labeled_ChatGPT.jsonl"
 PASSAGES_PATH = "data/passages_bm25_ChatGPT_humfacts.jsonl"
 
@@ -29,11 +24,7 @@ examples = read_fact_examples(
 
 print(f"Total examples: {len(examples)}")
 
-
-# ============================================================
 # STEP 02: LOAD PRETRAINED DEBERTA MODEL
-# ============================================================
-
 model_name = "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli"
 
 tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -55,18 +46,10 @@ ent_model = EntailmentModel(
     use_cuda
 )
 
-
-# ============================================================
 # STEP 03: INITIALIZE THE FACT CHECKER
-# ============================================================
-
 fact_checker = EntailmentFactChecker(ent_model)
 
-
-# ============================================================
 # STEP 04: IDENTIFY CLASSIFICATION ERRORS
-# ============================================================
-
 false_positives = []
 false_negatives = []
 
@@ -115,11 +98,7 @@ for index, example in enumerate(examples):
             "passages": example.passages
         })
 
-
-# ============================================================
 # STEP 05: DISPLAY EVALUATION RESULTS
-# ============================================================
-
 total = len(examples)
 
 accuracy = correct_predictions / total
@@ -133,11 +112,7 @@ print(f"Accuracy             : {accuracy:.4%}")
 print(f"\nFalse Positives      : {len(false_positives)}")
 print(f"False Negatives      : {len(false_negatives)}")
 
-
-# ============================================================
 # STEP 06: SAVE ALL INCORRECT EXAMPLES
-# ============================================================
-
 error_results = {
     "accuracy": accuracy,
     "total_examples": total,
@@ -161,11 +136,7 @@ with open(OUTPUT_PATH, "w", encoding="utf-8") as file:
 
 print(f"\nError analysis data saved to: {OUTPUT_PATH}")
 
-
-# ============================================================
 # STEP 07: DISPLAY FALSE POSITIVES
-# ============================================================
-
 print("\n========== FALSE POSITIVES ==========")
 
 for i, error in enumerate(false_positives, start=1):
@@ -179,11 +150,7 @@ for i, error in enumerate(false_positives, start=1):
         print(f"\nEvidence Passage {j}:")
         print(passage["text"])
 
-
-# ============================================================
 # STEP 08: DISPLAY FALSE NEGATIVES
-# ============================================================
-
 print("\n========== FALSE NEGATIVES ==========")
 
 for i, error in enumerate(false_negatives, start=1):
