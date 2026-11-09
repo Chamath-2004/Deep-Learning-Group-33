@@ -3,7 +3,6 @@
 import torch
 from typing import List
 import numpy as np
-import spacy
 import gc
 import re
 import os
@@ -383,6 +382,12 @@ class DependencyRecallThresholdFactChecker(FactChecker):
     THRESHOLD = 0.5
 
     def __init__(self):
+        try:
+            import spacy
+        except ImportError as exc:
+            raise ImportError(
+                "The dependency-based fact checker requires spaCy and its native dependencies."
+            ) from exc
         self.nlp = spacy.load('en_core_web_sm')
 
     def predict(self, fact: str, passages: List[dict]) -> str:

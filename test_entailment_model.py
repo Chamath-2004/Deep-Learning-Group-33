@@ -21,14 +21,16 @@ model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
 # Use evaluation mode
 model.eval()
 
-# CPU execution
-cuda = False
+# Use CUDA when an available GPU is detected; otherwise fall back to CPU.
+cuda = torch.cuda.is_available()
+if cuda:
+    model.to("cuda")
 
 # Initialise your EntailmentModel class
 entailment_model = EntailmentModel(model, tokenizer, cuda)
 
 print("Model loaded successfully!")
-print("Device: CPU")
+print("Device:", "CUDA" if cuda else "CPU")
 
 
 # ============================================================
